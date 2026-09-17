@@ -216,3 +216,44 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# =========================
+# Satellite imagery
+# =========================
+data/raw/
+data/processed/
+data/tiles/
+
+*.tif
+*.tiff
+*.jp2
+*.hdf
+*.h5
+
+# =========================
+# AI model weights
+# =========================
+models/
+
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# =========================
+# Vector indexes / local databases
+# =========================
+*.faiss
+*.index
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Generated outputs / logs
+# =========================
+logs/
+*.log
+tmp/
+temp/
