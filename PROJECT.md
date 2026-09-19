@@ -2,51 +2,46 @@
 
 ## 1. Semantic Retrieval
 
-User can enter a natural language query such as:
+The system must support:
 
-"new buildings near water"
+- Natural language → satellite imagery
+- Image → similar imagery
+- Spatial filtering
+- Temporal filtering
+- Sensor filtering
 
-System returns relevant satellite tiles ranked by relevance.
+## 2. Multi-Temporal Change Analysis
 
-## 2. Image Similarity
+The system must:
 
-User can select an image and find visually/semantically similar locations.
+- Compare the same geographic area across dates
+- Account for imperfect registration
+- Detect meaningful changes
+- Estimate earliest supported observation
+- Provide confidence
 
-## 3. Temporal Change
+## 3. False Alarm Suppression
 
-Given a geographic location and date range:
+The system should account for:
 
-- find available observations
-- align observations
-- compare them
-- identify meaningful changes
-- estimate earliest supported change
+- Clouds
+- Haze
+- Shadows
+- Snow
+- Seasonal variation
+- Illumination differences
+- Viewing-angle differences
+- Radiometric inconsistency
+- Imperfect registration
 
-## 4. False Alarm Suppression
+## 4. Analyst Workflow
 
-Consider:
+The analyst should be able to:
 
-- clouds
-- haze
-- shadows
-- seasonal variation
-- registration errors
-- sensor differences
-
-## 5. Analyst Workflow
-
-Display:
-
-- before image
-- after image
-- change map
-- confidence
-- date
-- location
-- sensor
-- provenance
-
-## 6. Offline
-
-Everything required for inference must run locally.
-
+- Search
+- Inspect results
+- View before/after imagery
+- View change evidence
+- See acquisition metadata
+- See provenance
+- Confirm/reject findings
