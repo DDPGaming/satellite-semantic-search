@@ -223,6 +223,8 @@ __marimo__/
 data/raw/
 data/processed/
 data/tiles/
+data/embeddings/
+data/index/
 data/evaluation/
 
 *.tif
