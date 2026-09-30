@@ -47,11 +47,30 @@ from src.ui.rendering import (
     render_mask_image,
     render_tile_image,
 )
+from src.ui.change_evidence import render_change_evidence_panel
+from src.ui.flowchart import MILESTONES_DATA, generate_m1_m9_flowchart_html
+from src.ui.gauges import (
+    render_change_ratio_gauge,
+    render_cloud_cover_gauge,
+    render_confidence_gauge,
+    render_numeric_gauge,
+    render_similarity_gauge,
+    render_spectral_distance_gauge,
+    render_suppression_ratio_gauge,
+    render_valid_ratio_gauge,
+)
+from src.ui.grid_visualization import (
+    get_tile_neighborhood_data,
+    load_scene_tile_matrix,
+    parse_tile_row_col,
+    render_spatial_tile_grid_html,
+)
 from src.ui.report import (
     generate_milestone_architecture_html,
     generate_technical_report_html,
     generate_technical_report_markdown,
 )
+
 
 
 def create_dummy_geotiff(path: Path, data: np.ndarray, dtype: str = "float32") -> None:
@@ -613,5 +632,253 @@ class TestUIServerIntegration(unittest.TestCase):
             sys.argv = old_argv
 
 
+class TestUIWorkflowAndComponents(unittest.TestCase):
+    """Unit tests for M1-M9 flowchart, numeric gauges, spatial grid, and evidence panel."""
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parent.parent
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_milestones_data_completeness(self) -> None:
+        """MILESTONES_DATA contains all 9 milestones with complete metadata."""
+        self.assertEqual(len(MILESTONES_DATA), 9)
+        expected_ids = [f"M{i}" for i in range(1, 10)]
+        actual_ids = [m["id"] for m in MILESTONES_DATA]
+        self.assertEqual(actual_ids, expected_ids)
+
+        required_keys = ["id", "title", "category", "status_badge", "purpose", "input", "processing", "output", "contribution"]
+        for m in MILESTONES_DATA:
+            for k in required_keys:
+                self.assertIn(k, m, f"Missing key {k} in milestone {m.get('id')}")
+                self.assertTrue(bool(m[k]), f"Empty key {k} in milestone {m.get('id')}")
+
+    def test_m1_m9_flowchart_html_rendering(self) -> None:
+        """Flowchart HTML includes container, badges, and all milestone steps."""
+        html_str = generate_m1_m9_flowchart_html()
+        self.assertIn("M1&ndash;M9 Processing Pipeline Architecture", html_str)
+        self.assertIn("Data Ingestion & Tile Pipeline", html_str)
+        self.assertIn("Natural-Language Semantic Search", html_str)
+        self.assertIn("Adaptive False-Alarm Suppression", html_str)
+        self.assertIn("M1&ndash;M4 Pre-Computed", html_str)
+        self.assertIn("M5&ndash;M9 Live Execution", html_str)
+        self.assertIn("&#8595;", html_str)
+
+    def test_numeric_gauge_rendering(self) -> None:
+        """Numeric range gauges render correctly for bounded, percentage, unbounded, and None."""
+        # Bounded percentage
+        gauge_pct = render_numeric_gauge("Change Ratio", 42.0, 0.0, 100.0, unit="%")
+        self.assertIn("42.000%", gauge_pct)
+        self.assertIn("width:42.0%", gauge_pct)
+        self.assertIn("&#9650; 42.0%", gauge_pct)
+        self.assertIn("0.000%", gauge_pct)
+        self.assertIn("100.000%", gauge_pct)
+
+        # Bounded custom with unit
+        gauge_custom = render_numeric_gauge("Spectral Distance", 1.5, 0.0, 2.0, unit="Δρ")
+        self.assertIn("1.500 Δρ", gauge_custom)
+        self.assertIn("width:75.0%", gauge_custom)
+        self.assertIn("&#9650; 75.0%", gauge_custom)
+
+        # Unbounded domain
+        gauge_unbounded = render_numeric_gauge("Unbounded Metric", 123.45, 0.0, None)
+        self.assertIn("123.450", gauge_unbounded)
+        self.assertIn("Physical Domain: &ge; 0.0", gauge_unbounded)
+
+        # None value fallback
+        gauge_none = render_numeric_gauge("Missing Metric", None, 0.0, 1.0)
+        self.assertIn("Not available", gauge_none)
+
+        # Specialized helper functions
+        self.assertIn("85.0%", render_similarity_gauge(0.85))
+        self.assertIn("92.0%", render_confidence_gauge(0.92))
+        self.assertIn("12.5%", render_cloud_cover_gauge(12.5))
+        self.assertIn("99.1%", render_valid_ratio_gauge(0.991))
+        self.assertIn("3.2%", render_change_ratio_gauge(0.032))
+        self.assertIn("45.0%", render_suppression_ratio_gauge(45, 100))
+        self.assertIn("0.1500 Δρ", render_spectral_distance_gauge(0.15))
+
+    def test_spatial_grid_parsing_and_neighborhood(self) -> None:
+        """Tile row/col parsing and 3x3 neighborhood calculations."""
+        # Parsing optical and SAR
+        self.assertEqual(parse_tile_row_col("s2_S2A_43QBB_20220127_0_L2A_10m_r03_c04"), (3, 4))
+        self.assertEqual(parse_tile_row_col("s1_IW_GRDH_1SDV_20220120_10m_r07_c02"), (7, 2))
+        self.assertIsNone(parse_tile_row_col("invalid_tile_format"))
+
+        # Real repo optical matrix loading
+        matrix = load_scene_tile_matrix("S2A_43QBB_20220127_0_L2A", self.repo_root)
+        self.assertEqual(len(matrix), 49)
+        self.assertIn((0, 0), matrix)
+        self.assertEqual(matrix[(0, 0)]["tile_id"], "s2_S2A_43QBB_20220127_0_L2A_10m_r00_c00")
+
+        # Corner tile neighborhood
+        hood_data = get_tile_neighborhood_data("s2_S2A_43QBB_20220127_0_L2A_10m_r00_c00", self.repo_root)
+        self.assertEqual((hood_data["selected_row"], hood_data["selected_col"]), (0, 0))
+        grid = hood_data["neighborhood_grid"]
+        nw_cell = grid[0][0]
+        self.assertEqual(nw_cell["status"], "out_of_bounds")
+
+        center_cell = grid[1][1]
+        self.assertEqual(center_cell["status"], "selected")
+        self.assertTrue(center_cell["is_center"])
+        self.assertEqual(center_cell["tile_id"], "s2_S2A_43QBB_20220127_0_L2A_10m_r00_c00")
+
+        # Render HTML
+        html_grid = render_spatial_tile_grid_html("s2_S2A_43QBB_20220127_0_L2A_10m_r00_c00", project_root=self.repo_root)
+        self.assertIn("NORTH", html_grid)
+        self.assertIn("Local 3&times;3 Tile Neighborhood", html_grid)
+        self.assertIn("Full Scene Tile Index", html_grid)
+
+    def test_topk_navigator_and_gallery(self) -> None:
+        """Top-K navigation bar and gallery render with switching controls."""
+        pair = make_dummy_pair(self.temp_path)
+        result = PoCPipelineResult(
+            query="port infrastructure",
+            status="success",
+            retrieval_hits=[
+                {"tile_id": "test_ref", "similarity_score": 0.89, "score": 0.89, "modality": "optical", "scene_id": "S2A_ref"},
+                {"tile_id": "test_comp", "similarity_score": 0.84, "score": 0.84, "modality": "optical", "scene_id": "S2A_ref"},
+            ],
+            filtered_hits=[
+                {"tile_id": "test_ref", "similarity_score": 0.89, "score": 0.89, "modality": "optical", "scene_id": "S2A_ref"},
+                {"tile_id": "test_comp", "similarity_score": 0.84, "score": 0.84, "modality": "optical", "scene_id": "S2A_ref"},
+            ],
+            selected_tile_id="test_ref",
+            temporal_pair=pair,
+        )
+
+        html_page = build_html_page(
+            query="port infrastructure",
+            top_k=5,
+            modality="optical",
+            selected_tile_id="test_ref",
+            result=result,
+            project_root=self.repo_root,
+        )
+
+        # Check navigation controls
+        self.assertIn("Rank 1 of 2 selected", html_page)
+        self.assertIn("nav-btn disabled", html_page)  # Previous button disabled at rank 1
+        self.assertIn("selected_tile_id=test_comp", html_page)  # Next button targets rank 2
+        self.assertIn('class="rank-btn active">Rank 1</a>', html_page)
+        self.assertIn('class="rank-btn">Rank 2</a>', html_page)
+        self.assertIn("topk-gallery", html_page)
+        self.assertIn("topk-gallery", html_page)
+
+    def test_change_evidence_panel_3stages(self) -> None:
+        """Evidence panel clearly presents the 3-stage detection and suppression workflow."""
+        pair = make_dummy_pair(self.temp_path)
+        mask = np.zeros((32, 32), dtype=bool)
+        mask[4:8, 4:8] = True
+        conf = np.zeros((32, 32), dtype=np.float32)
+        conf[4:8, 4:8] = 0.88
+        mag = np.full((32, 32), 0.05, dtype=np.float32)
+        mag[4:8, 4:8] = 0.35
+
+        change_res = ChangeResult(
+            pair_id=pair.pair_id,
+            modality="optical",
+            reference_tile_id="test_ref",
+            comparison_tile_id="test_comp",
+            reference_scene_id="S2A_ref",
+            comparison_scene_id="S2B_comp",
+            reference_datetime_utc="2022-01-27T00:00:00Z",
+            comparison_datetime_utc="2024-01-12T00:00:00Z",
+            temporal_delta_days=715.0,
+            grid_index=(0, 0),
+            status="success",
+            method="spectral_distance_l2",
+            summary_statistics={"mean": 0.10, "median": 0.08, "p95": 0.25, "valid_pixels": 1024},
+            change_magnitude=mag,
+        )
+
+        supp_res = SuppressedChangeResult(
+            pair_id=pair.pair_id,
+            modality="optical",
+            reference_tile_id="test_ref",
+            comparison_tile_id="test_comp",
+            reference_scene_id="S2A_ref",
+            comparison_scene_id="S2B_comp",
+            reference_datetime_utc="2022-01-27T00:00:00Z",
+            comparison_datetime_utc="2024-01-12T00:00:00Z",
+            temporal_delta_days=715.0,
+            grid_index=(0, 0),
+            status="success",
+            method="adaptive_mad_suppression",
+            noise_median=0.04,
+            noise_mad=0.015,
+            threshold_used=0.12,
+            candidate_pixels_count=16,
+            confirmed_pixels_count=12,
+            suppressed_pixels_count=4,
+            confirmed_change_ratio=0.0468,
+            mean_confidence_on_change=0.88,
+            max_confidence=0.88,
+            confirmed_mask=mask,
+            confidence_map=conf,
+        )
+
+        result = PoCPipelineResult(
+            query="industrial area",
+            status="success",
+            retrieval_hits=[{"tile_id": "test_ref", "score": 0.9}],
+            filtered_hits=[{"tile_id": "test_ref", "score": 0.9}],
+            selected_tile_id="test_ref",
+            temporal_pair=pair,
+            change_result=change_res,
+            suppressed_result=supp_res,
+        )
+
+        panel_html = render_change_evidence_panel(result, self.repo_root)
+
+        # 3 Stages and Breadcrumbs
+        self.assertIn("RAW SPECTRAL CHANGE", panel_html)
+        self.assertIn("QUALITY FILTERING &amp; SUPPRESSION", panel_html)
+        self.assertIn("FINAL CONFIRMED CHANGE", panel_html)
+        self.assertIn("Stage 1 &bull; M7 Multi-Temporal Baseline Pairing", panel_html)
+        self.assertIn("Stage 2 &bull; M8 Optical Spectral Change Vector Analysis (CVA)", panel_html)
+        self.assertIn("Stage 3 &bull; M9 Adaptive False-Alarm Suppression &amp; Confidence Scoring", panel_html)
+
+        # Analytical Callouts
+        self.assertIn("What M8 Detected:", panel_html)
+        self.assertIn("What M9 Suppressed:", panel_html)
+        self.assertIn("What Remains as Final Candidate Change:", panel_html)
+
+    def test_air_gapped_offline_integrity(self) -> None:
+        """HTML contains zero external CDNs, mapping APIs, or internet dependencies."""
+        flowchart = generate_m1_m9_flowchart_html()
+        grid = render_spatial_tile_grid_html("s2_S2A_43QBB_20220127_0_L2A_10m_r00_c00", project_root=self.repo_root)
+
+        
+        # Test full page
+        full_html = build_html_page(
+            query="test",
+            top_k=5,
+            modality="optical",
+            result=None,
+            project_root=self.repo_root,
+        )
+
+        forbidden_patterns = [
+            "cdn.jsdelivr",
+            "unpkg.com",
+            "cdnjs.cloudflare.com",
+            "googleapis.com",
+            "leaflet",
+            "mapbox",
+            "openlayers",
+            "<script src=\"http",
+            "<link rel=\"stylesheet\" href=\"http",
+        ]
+
+        for text, name in [(flowchart, "Flowchart"), (grid, "Spatial Grid"), (full_html, "Dashboard Page")]:
+            for pattern in forbidden_patterns:
+                self.assertNotIn(pattern, text, f"Forbidden external reference '{pattern}' found in {name}")
+
+
 if __name__ == "__main__":
     unittest.main()
+

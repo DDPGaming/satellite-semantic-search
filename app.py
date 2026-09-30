@@ -40,6 +40,18 @@ ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.pipeline import PoCPipeline, PoCPipelineResult
+from src.ui.change_evidence import render_change_evidence_panel
+from src.ui.flowchart import generate_m1_m9_flowchart_html
+from src.ui.gauges import (
+    render_cloud_cover_gauge,
+    render_confidence_gauge,
+    render_numeric_gauge,
+    render_similarity_gauge,
+    render_spectral_distance_gauge,
+    render_suppression_ratio_gauge,
+    render_valid_ratio_gauge,
+)
+from src.ui.grid_visualization import render_spatial_tile_grid_html
 from src.ui.metadata_inspection import (
     extract_geographic_info,
     extract_tile_display_metadata,
@@ -333,6 +345,95 @@ def build_html_page(
         gap: 10px;
     }
 
+    /* Top-K Tile Navigator Controls */
+    .navigator-bar {
+        background: var(--bg-main);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin-bottom: 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .navigator-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .nav-btn {
+        background: var(--bg-card);
+        color: var(--text-main);
+        border: 1px solid var(--border-color);
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.15s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .nav-btn:hover { background: var(--bg-card-hover); border-color: var(--accent-blue); }
+    .nav-btn.disabled { opacity: 0.35; pointer-events: none; }
+    .rank-btn {
+        background: var(--bg-card);
+        color: var(--text-muted);
+        border: 1px solid var(--border-color);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+        transition: all 0.15s ease;
+    }
+    .rank-btn:hover { color: var(--text-main); border-color: var(--accent-blue); }
+    .rank-btn.active {
+        background: var(--accent-blue);
+        color: #ffffff;
+        border-color: var(--accent-blue);
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+    }
+
+    /* Top-K Gallery Cards */
+    .topk-gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 14px;
+        margin-bottom: 20px;
+    }
+    .topk-card {
+        background: var(--bg-main);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+        transition: all 0.2s ease;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .topk-card.selected {
+        border: 2px solid var(--accent-cyan);
+        background: rgba(56, 189, 248, 0.08);
+        box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+    }
+    .topk-card img {
+        width: 100%;
+        max-width: 180px;
+        height: auto;
+        aspect-ratio: 1/1;
+        border-radius: 4px;
+        display: block;
+        margin: 0 auto 8px auto;
+        border: 1px solid var(--border-color);
+        image-rendering: pixelated;
+    }
+
     /* Milestone boxes */
     .milestone-box {
         background: var(--bg-main);
@@ -505,92 +606,200 @@ def build_html_page(
             </div>
             """
 
-        # 2. Semantic retrieval table with interactive Top-K tile selection
+        # 2. Semantic retrieval Top-K Navigator, Visual Gallery, and Table
         if result.filtered_hits or result.retrieval_hits:
             table_hits = result.filtered_hits if result.filtered_hits else result.retrieval_hits
-            table_rows = []
-            active_rank = 1
-            active_score = 0.0
+            num_hits = min(len(table_hits), top_k)
 
+            # Identify active selection index
+            active_idx = 0
             for i, h in enumerate(table_hits[:top_k]):
-                tile_id = h.get("tile_id", "")
-                is_sel = tile_id == result.selected_tile_id
-                score = float(h.get("similarity_score", h.get("score", 0.0)))
-                if is_sel:
-                    active_rank = i + 1
-                    active_score = score
+                if h.get("tile_id") == result.selected_tile_id:
+                    active_idx = i
+                    break
+            active_rank = active_idx + 1
+            active_hit = table_hits[active_idx]
+            active_tile_id = active_hit.get("tile_id", "")
+            active_score = float(active_hit.get("similarity_score", active_hit.get("score", 0.0)))
+            active_tile_name = html.escape(active_tile_id)
 
-                row_cls = ' class="selected"' if is_sel else ""
-                sel_badge = ' <span class="badge badge-sih" style="padding: 2px 6px; font-size: 9px;">Active</span>' if is_sel else ""
-                acq_dt = h.get("acquisition_datetime_utc", "")[:19].replace("T", " ") if h.get("acquisition_datetime_utc") else "N/A"
-                scene_display = html.escape(h.get("scene_id", "")[:20])
+            # Previous / Next navigation URLs
+            prev_idx = max(0, active_idx - 1)
+            next_idx = min(num_hits - 1, active_idx + 1)
+            prev_tile_id = table_hits[prev_idx].get("tile_id", "")
+            next_tile_id = table_hits[next_idx].get("tile_id", "")
 
-                # Build URL to explicitly select this tile
-                sel_params = {
+            def make_tile_url(t_id: str) -> str:
+                p = {
                     "query": query,
                     "modality": modality,
                     "top_k": str(top_k),
                     "date_from": date_from,
                     "date_to": date_to,
-                    "selected_tile_id": tile_id,
+                    "selected_tile_id": t_id,
                 }
-                sel_url = f"/?{urllib.parse.urlencode({k: v for k, v in sel_params.items() if v})}"
+                return f"/?{urllib.parse.urlencode({k: v for k, v in p.items() if v})}"
 
-                action_col = (
-                    '<span class="badge badge-offline" style="padding: 4px 8px;">Selected</span>'
+            prev_url = make_tile_url(prev_tile_id)
+            next_url = make_tile_url(next_tile_id)
+            prev_cls = "nav-btn" if active_idx > 0 else "nav-btn disabled"
+            next_cls = "nav-btn" if active_idx < num_hits - 1 else "nav-btn disabled"
+
+            # Rank buttons [Rank 1] [Rank 2] ... [Rank K]
+            rank_buttons_html = ""
+            for i, h in enumerate(table_hits[:top_k]):
+                r_num = i + 1
+                t_id = h.get("tile_id", "")
+                r_url = make_tile_url(t_id)
+                r_cls = "rank-btn active" if i == active_idx else "rank-btn"
+                rank_buttons_html += f'<a href="{r_url}" class="{r_cls}">Rank {r_num}</a>'
+
+            # Build Gallery Cards and Table Rows
+            gallery_cards_html = ""
+            table_rows = []
+            for i, h in enumerate(table_hits[:top_k]):
+                r_num = i + 1
+                t_id = h.get("tile_id", "")
+                is_sel = (i == active_idx)
+                score = float(h.get("similarity_score", h.get("score", 0.0)))
+                t_url = make_tile_url(t_id)
+                t_modality = h.get("modality", "optical")
+                acq_dt = h.get("acquisition_datetime_utc", "")[:19].replace("T", " ") if h.get("acquisition_datetime_utc") else "N/A"
+                scene_display = html.escape(h.get("scene_id", "")[:20])
+
+                # Thumbnail image
+                thumb_b64 = render_tile_image(t_id, t_modality, project_root=root)
+                if thumb_b64:
+                    thumb_img = f'<img src="{thumb_b64}" alt="Tile thumbnail" />'
+                else:
+                    thumb_img = '<div style="width:100%; max-width:180px; height:120px; display:flex; align-items:center; justify-content:center; margin:0 auto 8px auto; background:#11141c; border:1px dashed var(--border-color); border-radius:4px; font-size:10px; color:var(--text-muted);">No Thumbnail</div>'
+
+                card_sel_cls = "topk-card selected" if is_sel else "topk-card"
+                card_badge = '<span class="badge badge-sih" style="padding:2px 6px; font-size:9px;">Active</span>' if is_sel else f'<span class="badge badge-m" style="padding:2px 6px; font-size:9px;">Rank #{r_num}</span>'
+                btn_action = (
+                    '<span class="badge badge-offline" style="padding:5px 10px; font-size:11px; width:100%;">Selected Target</span>'
                     if is_sel
-                    else f'<a href="{sel_url}" class="btn-select">Select Tile</a>'
+                    else f'<a href="{t_url}" class="btn-select" style="text-align:center; display:block; padding:5px 10px; font-size:11px;">Select Tile &rarr;</a>'
                 )
 
+                gallery_cards_html += f"""
+                <div class="{card_sel_cls}">
+                    <div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <span style="font-size:12px; font-weight:800; color:var(--text-main);">#{r_num}</span>
+                            {card_badge}
+                        </div>
+                        {thumb_img}
+                        <div style="font-size:11px; font-weight:700; color:var(--text-main); font-family:monospace; word-break:break-all; margin-bottom:4px;">
+                            {html.escape(t_id[-16:])}
+                        </div>
+                        <div style="font-size:10px; color:var(--text-muted); margin-bottom:6px;">{acq_dt} UTC</div>
+                        <div style="margin-bottom:8px;">
+                            {render_similarity_gauge(score)}
+                        </div>
+                    </div>
+                    <div>
+                        {btn_action}
+                    </div>
+                </div>
+                """
+
+                # Table row
+                row_cls = ' class="selected"' if is_sel else ""
+                table_action_col = (
+                    '<span class="badge badge-offline" style="padding: 4px 8px;">Selected</span>'
+                    if is_sel
+                    else f'<a href="{t_url}" class="btn-select">Select Tile</a>'
+                )
                 table_rows.append(
                     f"<tr{row_cls}>"
-                    f"<td>{i + 1}{sel_badge}</td>"
+                    f"<td>{r_num}{' <span class=\"badge badge-sih\" style=\"padding:2px 6px; font-size:9px;\">Active</span>' if is_sel else ''}</td>"
                     f"<td><strong>{score:.4f}</strong></td>"
-                    f"<td>{html.escape(h.get('modality', '').upper())}</td>"
-                    f"<td><code>{html.escape(tile_id)}</code></td>"
+                    f"<td>{html.escape(t_modality.upper())}</td>"
+                    f"<td><code>{html.escape(t_id)}</code></td>"
                     f"<td>{acq_dt}</td>"
                     f"<td><code>{scene_display}..</code></td>"
-                    f"<td>{action_col}</td>"
+                    f"<td>{table_action_col}</td>"
                     f"</tr>"
                 )
 
-            # Active selection callout banner
-            active_tile_name = html.escape(result.selected_tile_id or "None")
+            # Active selection callout banner & Top-K Navigator Section HTML
             results_html += f"""
             <div class="card">
-                <div class="card-title"><span class="icon">&#9670;</span> Semantic Search Results (M5 Retrieval &rarr; M6 Filtering)</div>
-                <div class="active-tile-banner">
-                    <div>
-                        <strong>Selected Active Tile:</strong> <code>{active_tile_name}</code>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <div class="card-title" style="margin-bottom:0;">
+                        <span class="icon">&#9670;</span> Top-K Semantic Retrieval Navigator (M5 Discovery &rarr; M6 Filtering)
                     </div>
-                    <div>
-                        <strong>Rank:</strong> #{active_rank} &bull;
-                        <strong>Similarity Score:</strong> {active_score:.4f} &bull;
-                        <span class="badge badge-sih" style="margin-left: 6px;">Target for M7-M9</span>
+                    <span class="badge badge-sih">Rank {active_rank} of {num_hits} selected</span>
+                </div>
+
+                <!-- Navigator Controls Bar -->
+                <div class="navigator-bar">
+                    <div class="navigator-controls">
+                        <a href="{prev_url}" class="{prev_cls}">&#9664; Previous Tile</a>
+                        {rank_buttons_html}
+                        <a href="{next_url}" class="{next_cls}">Next Tile &#9654;</a>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div style="font-size:13px; color:var(--text-main);">
+                            <strong>Selected Active Tile:</strong> <code>{active_tile_name}</code>
+                        </div>
+                        <span class="badge badge-offline">Target for M7-M9</span>
                     </div>
                 </div>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Rank</th>
-                                <th>Similarity Score</th>
-                                <th>Modality</th>
-                                <th>Tile ID</th>
-                                <th>Acquisition UTC</th>
-                                <th>Scene</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {''.join(table_rows)}
-                        </tbody>
-                    </table>
+
+                <!-- Active Similarity Gauge Banner -->
+                <div style="margin-bottom:18px;">
+                    {render_similarity_gauge(active_score)}
                 </div>
+
+                <!-- Top-K Visual Gallery -->
+                <div class="topk-gallery">
+                    {gallery_cards_html}
+                </div>
+
+                <!-- Tabular Comparison List -->
+                <details>
+                    <summary style="font-size:13px; font-weight:700; color:var(--text-muted); cursor:pointer;">
+                        View Tabular Top-K Comparison List ({num_hits} tiles)
+                    </summary>
+                    <div class="table-container" style="margin-top:10px;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Similarity Score</th>
+                                    <th>Modality</th>
+                                    <th>Tile ID</th>
+                                    <th>Acquisition UTC</th>
+                                    <th>Scene</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {''.join(table_rows)}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
             </div>
             """
 
-        # 3. Exact Geographic Location & Spatial Footprint (for selected tile)
+        # 3. Spatial Tile Grid (Actual relative grid placement and 3x3 local neighborhood)
+        if result.selected_tile_id:
+            results_html += render_spatial_tile_grid_html(
+                result.selected_tile_id,
+                query_params={
+                    "query": query,
+                    "modality": modality,
+                    "top_k": str(top_k),
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                project_root=root,
+            )
+
+        # 4. Exact Geographic Location & Spatial Footprint (for selected tile)
         if result.selected_tile_id:
             active_id = result.selected_tile_id
             active_hit = result.selected_hit
@@ -678,12 +887,24 @@ def build_html_page(
             </div>
             """
 
-            # 4. Expandable Tile Metadata Panel
+            # 5. Expandable Tile Metadata Panel (with cloud cover gauge)
+            cloud_val = None
+            try:
+                if authoritative_meta and "cloud_cover_percentage" in authoritative_meta:
+                    cloud_val = float(authoritative_meta["cloud_cover_percentage"])
+                elif active_hit and "cloud_cover_percentage" in active_hit:
+                    cloud_val = float(active_hit["cloud_cover_percentage"])
+            except Exception:
+                pass
+
+            cloud_gauge_html = render_cloud_cover_gauge(cloud_val) if cloud_val is not None else ""
+
             results_html += f"""
             <div class="card">
                 <details>
                     <summary style="font-size:15px; font-weight:700; color:var(--text-main);"><span class="icon">&#128196;</span> Authoritative Tile Metadata (M2 / M4 / M6 Contract)</summary>
                     <div style="margin-top:16px;">
+                        {cloud_gauge_html}
                         <table class="metadata-table">
                             <tbody>
                                 <tr><th>Tile ID</th><td><code>{html.escape(tile_disp_meta['tile_id'])}</code></td></tr>
@@ -703,140 +924,10 @@ def build_html_page(
             </div>
             """
 
-        # 5. Temporal Observation Comparison (M7)
-        if result.temporal_pair:
-            pair = result.temporal_pair
-            ref_dt = pair.reference_datetime_utc[:19].replace("T", " ")
-            comp_dt = pair.comparison_datetime_utc[:19].replace("T", " ")
+        # 6. Multi-Temporal Change Analysis Evidence Panel (M7 -> M8 -> M9)
+        results_html += render_change_evidence_panel(result, project_root=root)
 
-            ref_render = f'<img src="{ref_img_data}" alt="Reference tile" />' if ref_img_data else '<div class="image-placeholder">GeoTIFF raster not directly visualizable</div>'
-            comp_render = f'<img src="{comp_img_data}" alt="Comparison tile" />' if comp_img_data else '<div class="image-placeholder">GeoTIFF raster not directly visualizable</div>'
-
-            align_badge_cls = "badge-offline" if pair.is_pixel_aligned else "badge-sih"
-
-            results_html += f"""
-            <div class="card">
-                <div class="card-title">
-                    <span class="icon">&#9200;</span> Temporal Observation Pair (M7 Alignment: <span class="badge {align_badge_cls}">{html.escape(pair.alignment_type)}</span>)
-                </div>
-                <div class="grid-2">
-                    <div class="image-box">
-                        <div class="image-title">Reference Observation (T0)</div>
-                        {ref_render}
-                        <div class="image-meta">Date: {ref_dt} UTC</div>
-                        <div class="image-meta">Tile: {html.escape(pair.reference_tile_id)}</div>
-                        <div class="image-meta">Scene: {html.escape(pair.reference_scene_id[:24])}..</div>
-                    </div>
-                    <div class="image-box">
-                        <div class="image-title">Comparison Observation (T1)</div>
-                        {comp_render}
-                        <div class="image-meta">Date: {comp_dt} UTC (+{pair.temporal_delta_days:.1f} days)</div>
-                        <div class="image-meta">Tile: {html.escape(pair.comparison_tile_id)}</div>
-                        <div class="image-meta">Scene: {html.escape(pair.comparison_scene_id[:24])}..</div>
-                    </div>
-                </div>
-            </div>
-            """
-
-        # 6. Change Detection & False-Alarm Suppression (M8 & M9)
-        if result.change_result and result.suppressed_result:
-            m8 = result.change_result
-            m9 = result.suppressed_result
-
-            if m9.status == "success":
-                # Render change visualizations
-                m8_render = f'<img src="{change_heatmap_data}" alt="M8 Spectral Distance" />' if change_heatmap_data else '<div class="image-placeholder">Raw change map array not available</div>'
-                m9_mask_render = f'<img src="{mask_img_data}" alt="M9 Confirmed Mask" />' if mask_img_data else '<div class="image-placeholder">Confirmed mask not available</div>'
-                m9_conf_render = f'<img src="{conf_heatmap_data}" alt="M9 Confidence Map" />' if conf_heatmap_data else '<div class="image-placeholder">Confidence map not available</div>'
-
-                results_html += f"""
-                <div class="card">
-                    <div class="card-title"><span class="icon">&#9889;</span> Change Analysis &amp; False-Alarm Suppression (M8 &rarr; M9)</div>
-                    <div class="grid-3">
-                        <div class="image-box">
-                            <div class="image-title">M8 Spectral Distance (CVA)</div>
-                            {m8_render}
-                            <div class="image-meta">Continuous Euclidean Magnitude</div>
-                        </div>
-                        <div class="image-box">
-                            <div class="image-title">M9 Confirmed Change Mask</div>
-                            {m9_mask_render}
-                            <div class="image-meta">Spatial 8-Neighbor &amp; Area Filtered</div>
-                        </div>
-                        <div class="image-box">
-                            <div class="image-title">M9 Heuristic Confidence</div>
-                            {m9_conf_render}
-                            <div class="image-meta">Bounded Confidence [0.05, 1.0]</div>
-                        </div>
-                    </div>
-                </div>
-                """
-
-                # 7. Quantitative Change Summary Cards
-                mean_conf_str = f"{m9.mean_confidence_on_change:.4f}" if m9.mean_confidence_on_change is not None else "N/A"
-                max_conf_str = f"{m9.max_confidence:.4f}" if m9.max_confidence is not None else "N/A"
-
-                results_html += f"""
-                <div class="card">
-                    <div class="card-title"><span class="icon">&#128202;</span> Quantitative Change &amp; Noise Summary</div>
-                    <div class="grid-4" style="margin-bottom: 16px;">
-                        <div class="metric-card">
-                            <div class="metric-label">Confirmed Changed Pixels</div>
-                            <div class="metric-val">{m9.confirmed_pixels_count:,}</div>
-                            <div class="metric-sub">Retained 8-connected cluster pixels</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Confirmed Change Ratio</div>
-                            <div class="metric-val">{m9.confirmed_change_ratio * 100:.2f}%</div>
-                            <div class="metric-sub">Percentage of valid observed ground</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">False Alarms Suppressed</div>
-                            <div class="metric-val" style="color: var(--accent-amber);">{m9.suppressed_pixels_count:,}</div>
-                            <div class="metric-sub">Isolated candidates filtered out</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Candidate Exceedances</div>
-                            <div class="metric-val">{m9.candidate_pixels_count:,}</div>
-                            <div class="metric-sub">Total pixels above adaptive threshold</div>
-                        </div>
-                    </div>
-                    <div class="grid-4">
-                        <div class="metric-card">
-                            <div class="metric-label">Noise Median</div>
-                            <div class="metric-val">{m9.noise_median:.4f}</div>
-                            <div class="metric-sub">Baseline background spectral shift</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Noise MAD</div>
-                            <div class="metric-val">{m9.noise_mad:.4f}</div>
-                            <div class="metric-sub">Median Absolute Deviation</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Adaptive Threshold (&tau;)</div>
-                            <div class="metric-val" style="color: var(--accent-cyan);">{m9.threshold_used:.4f}</div>
-                            <div class="metric-sub">median + max(3 &times; 1.4826 &times; MAD, offset)</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Mean Heuristic Confidence</div>
-                            <div class="metric-val">{mean_conf_str}</div>
-                            <div class="metric-sub">Peak confidence: {max_conf_str}</div>
-                        </div>
-                    </div>
-                </div>
-                """
-            else:
-                results_html += f"""
-                <div class="card">
-                    <div class="card-title"><span class="icon">&#9888;</span> Change Detection Deferred / Unsupported</div>
-                    <div class="alert alert-warning">
-                        <strong>Status: {html.escape(m9.status)}</strong><br>
-                        {html.escape(m9.warnings[0]) if m9.warnings else 'No additional diagnostics.'}
-                    </div>
-                </div>
-                """
-
-        # 8. Machine-Readable Provenance expander
+        # 7. Machine-Readable Provenance expander
         prov_dict = result.to_dict()
         prov_json = html.escape(json.dumps(prov_dict, indent=2))
         results_html += f"""
@@ -847,6 +938,9 @@ def build_html_page(
             </details>
         </div>
         """
+
+    # 8. M1-M9 Processing Pipeline Architecture Flowchart (prominently displayed)
+    flowchart_html = generate_m1_m9_flowchart_html()
 
     # 9. FLUX Milestone Architecture (Roadmap & Status)
     milestone_arch_html = generate_milestone_architecture_html()
@@ -868,6 +962,7 @@ def build_html_page(
             {alert_html}
             {query_panel_html}
             {results_html}
+            {flowchart_html}
             {milestone_arch_html}
             {technical_report_html}
         </div>
