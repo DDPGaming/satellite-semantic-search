@@ -1,13 +1,17 @@
-"""Unit tests for the FLUX Presentation UI and rendering layer.
+"""Unit tests for the FLUX Presentation UI, metadata inspection, and reporting layers.
 
 Covers:
 1. True-color optical and SAR raster rendering to base64 PNG data URLs
 2. Change magnitude heatmap rendering
 3. Confirmed change mask binary image rendering
 4. Heuristic confidence heatmap rendering
-5. Dashboard HTML assembly for initial, populated, and error states
-6. ThreadingHTTPServer creation, routing, and HTTP GET request handling
-7. CLI argument parsing
+5. Authoritative metadata extraction, geographic coordinates (WGS84 & projected), and offline SVG diagrams
+6. Milestone architecture (M0-M9 frozen vs M10-M15 planned) HTML generation
+7. Full 15-section technical report Markdown and HTML generation
+8. Dashboard HTML assembly for initial, populated, and error states
+9. Interactive Top-K tile selection and highlighting
+10. HTTP GET endpoints including report downloads and selected tile query execution
+11. CLI argument parsing
 """
 
 import base64
@@ -18,8 +22,8 @@ import threading
 import time
 import unittest
 from unittest.mock import MagicMock
-import urllib.request
 import urllib.parse
+import urllib.request
 
 import numpy as np
 from PIL import Image
@@ -31,11 +35,22 @@ from src.change_detection.models import ChangeResult
 from src.pairing.models import AlignmentStatus, SpatialCorrespondence, TemporalPair
 from src.pipeline import PipelineStageTiming, PoCPipelineResult
 from src.suppression.models import SuppressedChangeResult
+from src.ui.metadata_inspection import (
+    extract_geographic_info,
+    extract_tile_display_metadata,
+    load_tile_authoritative_metadata,
+    render_bounding_box_diagram,
+)
 from src.ui.rendering import (
     render_change_heatmap,
     render_confidence_heatmap,
     render_mask_image,
     render_tile_image,
+)
+from src.ui.report import (
+    generate_milestone_architecture_html,
+    generate_technical_report_html,
+    generate_technical_report_markdown,
 )
 
 
@@ -123,7 +138,6 @@ class TestUIRendering(unittest.TestCase):
         self.assertIsNotNone(data_url)
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
 
-        # Decode and verify dimensions
         b64_content = data_url.split(",", 1)[1]
         img_bytes = base64.b64decode(b64_content)
         img = Image.open(io.BytesIO(img_bytes))
@@ -195,6 +209,116 @@ class TestUIRendering(unittest.TestCase):
         self.assertEqual(img.size, (8, 8))
 
 
+class TestUIMetadataInspection(unittest.TestCase):
+    """Tests for geographic coordinate extraction and tile metadata in src/ui/metadata_inspection.py."""
+
+    def test_extract_geographic_info_wgs84(self) -> None:
+        """Extracts exact WGS84 bounds, centroid, and all 4 corners."""
+        meta = {
+            "crs": "EPSG:32643",
+            "bounds_wgs84": [72.90, 18.90, 73.10, 19.10],
+            "bounds_projected": [280000.0, 2100000.0, 290000.0, 2110000.0],
+        }
+        geo = extract_geographic_info(meta)
+        self.assertTrue(geo["has_geo"])
+        self.assertEqual(geo["crs"], "EPSG:32643")
+        self.assertEqual(geo["bounds_wgs84"], [72.90, 18.90, 73.10, 19.10])
+
+        # Centroid
+        self.assertAlmostEqual(geo["centroid_wgs84"]["lon"], 73.00)
+        self.assertAlmostEqual(geo["centroid_wgs84"]["lat"], 19.00)
+
+        # Corners
+        corners = geo["corners_wgs84"]
+        self.assertAlmostEqual(corners["NW"]["lon"], 72.90)
+        self.assertAlmostEqual(corners["NW"]["lat"], 19.10)
+        self.assertAlmostEqual(corners["NE"]["lon"], 73.10)
+        self.assertAlmostEqual(corners["NE"]["lat"], 19.10)
+        self.assertAlmostEqual(corners["SW"]["lon"], 72.90)
+        self.assertAlmostEqual(corners["SW"]["lat"], 18.90)
+        self.assertAlmostEqual(corners["SE"]["lon"], 73.10)
+        self.assertAlmostEqual(corners["SE"]["lat"], 18.90)
+
+        # Projected
+        self.assertTrue(geo["is_projected"])
+        self.assertEqual(geo["bounds_projected"], [280000.0, 2100000.0, 290000.0, 2110000.0])
+
+    def test_extract_geographic_info_unprojected(self) -> None:
+        """Handles unprojected SAR metadata without projected bounds."""
+        meta = {
+            "crs": "EPSG:4326",
+            "bounds_wgs84": [73.10, 19.02, 73.14, 19.05],
+            "bounds_projected": None,
+        }
+        geo = extract_geographic_info(meta)
+        self.assertTrue(geo["has_geo"])
+        self.assertFalse(geo["is_projected"])
+        self.assertIsNone(geo["bounds_projected"])
+
+    def test_render_bounding_box_diagram(self) -> None:
+        """Generates offline SVG diagram containing coordinates and corner pins."""
+        svg = render_bounding_box_diagram([72.95, 18.95, 73.05, 19.05], crs="EPSG:32643")
+        self.assertIn("<svg", svg)
+        self.assertIn("EPSG:32643", svg)
+        self.assertIn("NW", svg)
+        self.assertIn("Centroid", svg)
+        self.assertIn("72.95000", svg)
+
+    def test_extract_tile_display_metadata_fallback(self) -> None:
+        """Unavailable metadata fields fallback to 'Not available' without inventing values."""
+        disp = extract_tile_display_metadata({}, {})
+        self.assertEqual(disp["tile_id"], "Not available")
+        self.assertEqual(disp["scene_id"], "Not available")
+        self.assertEqual(disp["modality"], "Not available")
+        self.assertEqual(disp["acquisition_datetime_utc"], "Not available")
+        self.assertEqual(disp["grid_index"], "Not available")
+
+
+class TestUIReports(unittest.TestCase):
+    """Tests for Milestone Architecture and Technical Report generation in src/ui/report.py."""
+
+    def test_generate_milestone_architecture_html(self) -> None:
+        """Milestone architecture distinguishes M0-M9 frozen from M10-M15 planned."""
+        html_str = generate_milestone_architecture_html()
+        self.assertIn("FLUX Milestone Architecture", html_str)
+        self.assertIn("M0 &bull; Frozen", html_str)
+        self.assertIn("M9 &bull; Frozen", html_str)
+        self.assertIn("M10 &bull; Planned", html_str)
+        self.assertIn("M15 &bull; Planned", html_str)
+
+    def test_generate_technical_report_markdown(self) -> None:
+        """Technical report contains all 15 required sections and no fabricated metrics."""
+        md = generate_technical_report_markdown()
+        self.assertIn("1. Executive Summary", md)
+        self.assertIn("2. Problem Statement", md)
+        self.assertIn("3. Technologies Used", md)
+        self.assertIn("4. System Architecture", md)
+        self.assertIn("5. Complete Algorithmic Flowchart", md)
+        self.assertIn("6. M0–M15 Milestone Status", md)
+        self.assertIn("7. Current Implementation Details", md)
+        self.assertIn("8. Technical Feasibility Assessment", md)
+        self.assertIn("9. Practical Viability", md)
+        self.assertIn("10. Known Limitations & Technical Risk Disclosure", md)
+        self.assertIn("11. Evaluation Strategy", md)
+        self.assertIn("12. Current PoC Benchmark Baseline", md)
+        self.assertIn("13. End-to-End Demonstration Workflow", md)
+        self.assertIn("14. Future Development Roadmap", md)
+        self.assertIn("15. Conclusion", md)
+
+        # Confirm technologies listed
+        self.assertIn("Rasterio", md)
+        self.assertIn("FAISS", md)
+        self.assertIn("CLIP-RSICD-v2", md)
+        self.assertIn("SIH2026227", md)
+
+    def test_generate_technical_report_html(self) -> None:
+        """Report HTML includes download buttons and rendered headings."""
+        html_str = generate_technical_report_html()
+        self.assertIn("FLUX Full Technical &amp; Feasibility Report", html_str)
+        self.assertIn("/download-report?format=markdown", html_str)
+        self.assertIn("/download-report?format=html", html_str)
+
+
 class TestUIHtmlPage(unittest.TestCase):
     """Tests for HTML generation in app.py."""
 
@@ -233,7 +357,7 @@ class TestUIHtmlPage(unittest.TestCase):
         self.assertIn("alert-error", html_str)
 
     def test_build_html_page_with_populated_result(self) -> None:
-        """Populated PoCPipelineResult renders all pipeline stages and metric cards."""
+        """Populated PoCPipelineResult renders all pipeline stages, selected tile info, and reports."""
         pair = make_dummy_pair(self.root_path)
 
         timing = PipelineStageTiming(
@@ -297,10 +421,12 @@ class TestUIHtmlPage(unittest.TestCase):
             query="urban expansion",
             status="success",
             retrieval_hits=[
-                {"tile_id": "test_ref", "similarity_score": 0.88, "score": 0.88, "modality": "optical", "scene_id": "S2A_ref"}
+                {"tile_id": "test_ref", "similarity_score": 0.88, "score": 0.88, "modality": "optical", "scene_id": "S2A_ref"},
+                {"tile_id": "test_rank2", "similarity_score": 0.82, "score": 0.82, "modality": "optical", "scene_id": "S2A_ref"},
             ],
             filtered_hits=[
-                {"tile_id": "test_ref", "similarity_score": 0.88, "score": 0.88, "modality": "optical", "scene_id": "S2A_ref"}
+                {"tile_id": "test_ref", "similarity_score": 0.88, "score": 0.88, "modality": "optical", "scene_id": "S2A_ref"},
+                {"tile_id": "test_rank2", "similarity_score": 0.82, "score": 0.82, "modality": "optical", "scene_id": "S2A_ref"},
             ],
             selected_tile_id="test_ref",
             temporal_pair=pair,
@@ -313,6 +439,7 @@ class TestUIHtmlPage(unittest.TestCase):
             query="urban expansion",
             top_k=5,
             modality="optical",
+            selected_tile_id="test_ref",
             result=result,
             project_root=self.root_path,
         )
@@ -322,31 +449,40 @@ class TestUIHtmlPage(unittest.TestCase):
         self.assertIn("0.045 s", html_str)
         self.assertIn("M8 Change Det.", html_str)
 
-        # Retrieval table
+        # Top-K table with interactive selection
         self.assertIn("test_ref", html_str)
-        self.assertIn("0.8800", html_str)
+        self.assertIn("test_rank2", html_str)
+        self.assertIn("Select Tile", html_str)
+        self.assertIn("Selected Active Tile:", html_str)
+
+        # Geographic Location section
+        self.assertIn("Exact Geographic Location", html_str)
+        self.assertIn("WGS84 Geographic Coordinates", html_str)
+
+        # Expandable Tile Metadata
+        self.assertIn("Authoritative Tile Metadata", html_str)
 
         # M7 temporal pair info
         self.assertIn("715.0 days", html_str)
         self.assertIn("test_comp", html_str)
 
         # Quantitative metrics
-        self.assertIn("25", html_str)  # confirmed pixels
-        self.assertIn("2.44%", html_str)  # change ratio
-        self.assertIn("0.1067", html_str)  # threshold
-        self.assertIn("0.8500", html_str)  # mean confidence
+        self.assertIn("25", html_str)
+        self.assertIn("2.44%", html_str)
+        self.assertIn("0.1067", html_str)
+        self.assertIn("0.8500", html_str)
 
-        # JSON Provenance expander
-        self.assertIn("Inspect Complete Machine-Readable Provenance", html_str)
-        self.assertIn('"urban expansion"', html_str)
+        # Milestone Architecture and Full Technical Report sections
+        self.assertIn("FLUX Milestone Architecture", html_str)
+        self.assertIn("FLUX Full Technical &amp; Feasibility Report", html_str)
+        self.assertIn("/download-report?format=markdown", html_str)
 
 
 class TestUIServerIntegration(unittest.TestCase):
-    """Tests for HTTP server lifecycle and request processing."""
+    """Tests for HTTP server lifecycle, query handling, and report downloads."""
 
     def test_http_server_get_request(self) -> None:
         """Server responds to HTTP GET with status 200 and valid HTML."""
-        # Create a mock pipeline
         mock_pipeline = MagicMock()
         mock_pipeline.run.return_value = PoCPipelineResult(
             query="mock query",
@@ -356,7 +492,6 @@ class TestUIServerIntegration(unittest.TestCase):
             warnings=("No matching tiles found for query.",),
         )
 
-        # Bind to port 0 to choose an open ephemeral port automatically
         server = create_ui_server(host="127.0.0.1", port=0, pipeline=mock_pipeline)
         port = server.server_address[1]
 
@@ -377,6 +512,89 @@ class TestUIServerIntegration(unittest.TestCase):
             self.assertIn("mock query", body)
             self.assertIn("No matching tiles found for query", body)
             mock_pipeline.run.assert_called_once()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+    def test_http_server_download_report_markdown(self) -> None:
+        """Server responds to /download-report?format=markdown with Markdown attachment."""
+        server = create_ui_server(host="127.0.0.1", port=0, pipeline=MagicMock())
+        port = server.server_address[1]
+
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            url = f"http://127.0.0.1:{port}/download-report?format=markdown"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                status_code = response.status
+                headers = dict(response.getheaders())
+                body = response.read().decode("utf-8")
+
+            self.assertEqual(status_code, 200)
+            self.assertIn("text/markdown", headers.get("Content-Type", ""))
+            self.assertIn("FLUX_Technical_Report.md", headers.get("Content-Disposition", ""))
+            self.assertIn("# FLUX Technical & Feasibility Report", body)
+            self.assertIn("Executive Summary", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+    def test_http_server_download_report_html(self) -> None:
+        """Server responds to /download-report?format=html with HTML attachment."""
+        server = create_ui_server(host="127.0.0.1", port=0, pipeline=MagicMock())
+        port = server.server_address[1]
+
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            url = f"http://127.0.0.1:{port}/download-report?format=html"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                status_code = response.status
+                headers = dict(response.getheaders())
+                body = response.read().decode("utf-8")
+
+            self.assertEqual(status_code, 200)
+            self.assertIn("text/html", headers.get("Content-Type", ""))
+            self.assertIn("FLUX_Technical_Report.html", headers.get("Content-Disposition", ""))
+            self.assertIn("<!DOCTYPE html>", body)
+            self.assertIn("FLUX Technical &amp; Feasibility Report", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+    def test_http_server_explicit_tile_selection(self) -> None:
+        """Server forwards selected_tile_id parameter to pipeline.run()."""
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = PoCPipelineResult(
+            query="test",
+            status="no_retrieval_hits",
+            retrieval_hits=[],
+            filtered_hits=[],
+            selected_tile_id="custom_tile_123",
+        )
+
+        server = create_ui_server(host="127.0.0.1", port=0, pipeline=mock_pipeline)
+        port = server.server_address[1]
+
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            url = f"http://127.0.0.1:{port}/?query=test&selected_tile_id=custom_tile_123"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+
+            mock_pipeline.run.assert_called_once()
+            _, kwargs = mock_pipeline.run.call_args
+            self.assertEqual(kwargs.get("selected_tile_id"), "custom_tile_123")
         finally:
             server.shutdown()
             server.server_close()

@@ -8,6 +8,8 @@ Demonstrates the complete end-to-end pipeline:
     ↓
   M6: Metadata Filtering (Modality, Dates, Scene, BBox)
     ↓
+  Interactive Top-K Tile Selection & Geographic Location Inspection
+    ↓
   M7: Temporal Pairing (Counterpart Resolution & Spatial Alignment)
     ↓
   M8: Spectral Change Detection (Continuous Euclidean Distance)
@@ -15,11 +17,13 @@ Demonstrates the complete end-to-end pipeline:
   M9: Adaptive False-Alarm Suppression (Robust MAD Noise Thresholding & Spatial Filtering)
     ↓
   Interactive Visual Results (True-color Satellite Imagery, Change Heatmaps, Confirmed Masks)
+    ↓
+  Milestone Architecture & Full Technical / Feasibility Report
 
 Architecture Rule:
 Directly invokes `src.pipeline.PoCPipeline` and consumes `PoCPipelineResult`.
 Does not duplicate or reimplement M1-M9 milestone logic.
-Runs 100% locally and offline without external CDN or cloud dependencies.
+Runs 100% locally and offline without external CDN, mapping tiles, or cloud dependencies.
 """
 
 import argparse
@@ -36,11 +40,22 @@ ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.pipeline import PoCPipeline, PoCPipelineResult
+from src.ui.metadata_inspection import (
+    extract_geographic_info,
+    extract_tile_display_metadata,
+    load_tile_authoritative_metadata,
+    render_bounding_box_diagram,
+)
 from src.ui.rendering import (
     render_change_heatmap,
     render_confidence_heatmap,
     render_mask_image,
     render_tile_image,
+)
+from src.ui.report import (
+    generate_milestone_architecture_html,
+    generate_technical_report_html,
+    generate_technical_report_markdown,
 )
 
 DEFAULT_QUERY = "urban development around Navi Mumbai"
@@ -52,6 +67,7 @@ def build_html_page(
     modality: str = "optical",
     date_from: str = "",
     date_to: str = "",
+    selected_tile_id: str = "",
     result: Optional[PoCPipelineResult] = None,
     error_message: Optional[str] = None,
     project_root: Optional[Path] = None,
@@ -267,6 +283,88 @@ def build_html_page(
     tr.selected { background: rgba(59, 130, 246, 0.12); font-weight: 600; }
     tr.selected td:first-child { border-left: 3px solid var(--accent-blue); }
 
+    /* Buttons & Interactive items */
+    .btn-select {
+        background: #2563eb;
+        color: #ffffff;
+        padding: 4px 10px;
+        border-radius: 4px;
+        text-decoration: none;
+        font-size: 11px;
+        font-weight: 600;
+        display: inline-block;
+        transition: background 0.15s;
+    }
+    .btn-select:hover { background: #1d4ed8; }
+
+    .btn-download {
+        background: var(--accent-blue);
+        color: #ffffff;
+        padding: 8px 16px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: background 0.15s;
+    }
+    .btn-download:hover { background: #2563eb; }
+    .btn-download-alt {
+        background: #1e293b;
+        color: var(--accent-cyan);
+        border: 1px solid var(--accent-cyan);
+    }
+    .btn-download-alt:hover { background: #24344d; }
+
+    .active-tile-banner {
+        background: rgba(59, 130, 246, 0.12);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        font-size: 13px;
+        color: var(--text-main);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    /* Milestone boxes */
+    .milestone-box {
+        background: var(--bg-main);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 14px;
+    }
+    .milestone-box.implemented {
+        border-left: 3px solid var(--accent-emerald);
+    }
+    .milestone-box.planned {
+        border-left: 3px solid var(--accent-blue);
+        border-style: dashed;
+    }
+    .milestone-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 13px;
+    }
+    .milestone-desc {
+        font-size: 12px;
+        color: var(--text-muted);
+        line-height: 1.45;
+    }
+
+    /* Metadata details table */
+    .metadata-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .metadata-table th { width: 220px; background: #11141c; color: var(--text-muted); font-weight: 600; padding: 8px 12px; border: 1px solid var(--border-color); }
+    .metadata-table td { background: var(--bg-main); color: var(--text-main); padding: 8px 12px; border: 1px solid var(--border-color); font-family: monospace; }
+
     /* Alert / Warnings */
     .alert {
         padding: 14px 18px;
@@ -287,35 +385,41 @@ def build_html_page(
     q_safe = html.escape(query)
     from_safe = html.escape(date_from or "")
     to_safe = html.escape(date_to or "")
+    sel_safe = html.escape(selected_tile_id or "")
 
     # Header HTML
-    header_html = f"""
+    header_html = """
     <header>
         <div class="container header-content">
             <div>
                 <div class="brand-title">
                     <span class="logo">&#9672;</span> FLUX
                 </div>
-                <div class="brand-subtitle">Semantic Retrieval & Multi-Temporal Change Analysis</div>
+                <div class="brand-subtitle">Semantic Retrieval &amp; Multi-Temporal Change Analysis</div>
             </div>
             <div class="badges">
                 <span class="badge badge-sih">SIH2026227</span>
                 <span class="badge badge-offline">&#9679; LOCAL / OFFLINE</span>
-                <span class="badge badge-m">M5 &rarr; M9 PoC</span>
+                <span class="badge badge-m">M5 &rarr; M9 Frozen</span>
             </div>
         </div>
     </header>
     """
 
     # Query Panel HTML
-    opt_selected = "selected" if modality.lower() == "optical" else ""
-    sar_selected = "selected" if modality.lower() == "sar" else ""
-    all_selected = "selected" if modality.lower() == "all" else ""
+    opt_sel = "selected" if modality.lower() == "optical" else ""
+    sar_sel = "selected" if modality.lower() == "sar" else ""
+    all_sel = "selected" if modality.lower() == "all" else ""
+
+    k3_sel = "selected" if top_k == 3 else ""
+    k5_sel = "selected" if top_k == 5 else ""
+    k10_sel = "selected" if top_k == 10 else ""
 
     query_panel_html = f"""
     <div class="card">
-        <div class="card-title"><span class="icon">&#9881;</span> Natural Language Query & Filter Panel</div>
+        <div class="card-title"><span class="icon">&#9881;</span> Natural Language Query &amp; Filter Panel</div>
         <form method="GET" action="/">
+            <input type="hidden" name="selected_tile_id" value="" />
             <div class="form-grid">
                 <div class="form-group">
                     <label for="query">Natural-Language Query</label>
@@ -324,17 +428,17 @@ def build_html_page(
                 <div class="form-group">
                     <label for="modality">Modality</label>
                     <select id="modality" name="modality" class="form-control">
-                        <option value="optical" {opt_selected}>Optical (Sentinel-2)</option>
-                        <option value="sar" {sar_selected}>SAR (Sentinel-1)</option>
-                        <option value="all" {all_selected}>All Modalities</option>
+                        <option value="optical" {opt_sel}>Optical (Sentinel-2)</option>
+                        <option value="sar" {sar_sel}>SAR (Sentinel-1)</option>
+                        <option value="all" {all_sel}>All Modalities</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="top_k">Top-K</label>
                     <select id="top_k" name="top_k" class="form-control">
-                        <option value="3" {"selected" if top_k == 3 else ""}>3</option>
-                        <option value="5" {"selected" if top_k == 5 else ""}>5</option>
-                        <option value="10" {"selected" if top_k == 10 else ""}>10</option>
+                        <option value="3" {k3_sel}>3</option>
+                        <option value="5" {k5_sel}>5</option>
+                        <option value="10" {k10_sel}>10</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -348,10 +452,10 @@ def build_html_page(
         </form>
         <div class="chips">
             <span class="chips-label">Sample Queries:</span>
-            <a class="chip" href="/?query=urban+development+around+Navi+Mumbai&modality=optical">urban development around Navi Mumbai</a>
-            <a class="chip" href="/?query=built-up+area+around+Navi+Mumbai&modality=optical">built-up area around Navi Mumbai</a>
-            <a class="chip" href="/?query=vegetation+change+around+Navi+Mumbai&modality=optical">vegetation change around Navi Mumbai</a>
-            <a class="chip" href="/?query=coastal+water+radar+reflectance&modality=sar">coastal water radar reflectance (SAR)</a>
+            <a class="chip" href="/?query=urban+development+around+Navi+Mumbai&amp;modality=optical">urban development around Navi Mumbai</a>
+            <a class="chip" href="/?query=built-up+area+around+Navi+Mumbai&amp;modality=optical">built-up area around Navi Mumbai</a>
+            <a class="chip" href="/?query=vegetation+change+around+Navi+Mumbai&amp;modality=optical">vegetation change around Navi Mumbai</a>
+            <a class="chip" href="/?query=coastal+water+radar+reflectance&amp;modality=sar">coastal water radar reflectance (SAR)</a>
         </div>
     </div>
     """
@@ -369,7 +473,7 @@ def build_html_page(
             w_text = "<br>".join([f"&bull; {html.escape(w)}" for w in result.warnings])
             alert_html += f'<div class="alert alert-warning"><strong>Pipeline Diagnostics:</strong><br>{w_text}</div>'
 
-        # Timing grid
+        # 1. Pipeline Execution Timings Bar
         if result.timing:
             t = result.timing
             results_html += f"""
@@ -401,18 +505,43 @@ def build_html_page(
             </div>
             """
 
-        # Semantic retrieval table (M5 & M6)
+        # 2. Semantic retrieval table with interactive Top-K tile selection
         if result.filtered_hits or result.retrieval_hits:
             table_hits = result.filtered_hits if result.filtered_hits else result.retrieval_hits
             table_rows = []
+            active_rank = 1
+            active_score = 0.0
+
             for i, h in enumerate(table_hits[:top_k]):
                 tile_id = h.get("tile_id", "")
                 is_sel = tile_id == result.selected_tile_id
-                row_cls = ' class="selected"' if is_sel else ""
-                sel_badge = ' <span class="badge badge-sih" style="padding: 2px 6px; font-size: 9px;">Selected</span>' if is_sel else ""
-                acq_dt = h.get("acquisition_datetime_utc", "")[:19].replace("T", " ") if h.get("acquisition_datetime_utc") else "N/A"
                 score = float(h.get("similarity_score", h.get("score", 0.0)))
+                if is_sel:
+                    active_rank = i + 1
+                    active_score = score
+
+                row_cls = ' class="selected"' if is_sel else ""
+                sel_badge = ' <span class="badge badge-sih" style="padding: 2px 6px; font-size: 9px;">Active</span>' if is_sel else ""
+                acq_dt = h.get("acquisition_datetime_utc", "")[:19].replace("T", " ") if h.get("acquisition_datetime_utc") else "N/A"
                 scene_display = html.escape(h.get("scene_id", "")[:20])
+
+                # Build URL to explicitly select this tile
+                sel_params = {
+                    "query": query,
+                    "modality": modality,
+                    "top_k": str(top_k),
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "selected_tile_id": tile_id,
+                }
+                sel_url = f"/?{urllib.parse.urlencode({k: v for k, v in sel_params.items() if v})}"
+
+                action_col = (
+                    '<span class="badge badge-offline" style="padding: 4px 8px;">Selected</span>'
+                    if is_sel
+                    else f'<a href="{sel_url}" class="btn-select">Select Tile</a>'
+                )
+
                 table_rows.append(
                     f"<tr{row_cls}>"
                     f"<td>{i + 1}{sel_badge}</td>"
@@ -421,12 +550,25 @@ def build_html_page(
                     f"<td><code>{html.escape(tile_id)}</code></td>"
                     f"<td>{acq_dt}</td>"
                     f"<td><code>{scene_display}..</code></td>"
+                    f"<td>{action_col}</td>"
                     f"</tr>"
                 )
 
+            # Active selection callout banner
+            active_tile_name = html.escape(result.selected_tile_id or "None")
             results_html += f"""
             <div class="card">
                 <div class="card-title"><span class="icon">&#9670;</span> Semantic Search Results (M5 Retrieval &rarr; M6 Filtering)</div>
+                <div class="active-tile-banner">
+                    <div>
+                        <strong>Selected Active Tile:</strong> <code>{active_tile_name}</code>
+                    </div>
+                    <div>
+                        <strong>Rank:</strong> #{active_rank} &bull;
+                        <strong>Similarity Score:</strong> {active_score:.4f} &bull;
+                        <span class="badge badge-sih" style="margin-left: 6px;">Target for M7-M9</span>
+                    </div>
+                </div>
                 <div class="table-container">
                     <table>
                         <thead>
@@ -437,6 +579,7 @@ def build_html_page(
                                 <th>Tile ID</th>
                                 <th>Acquisition UTC</th>
                                 <th>Scene</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -447,7 +590,120 @@ def build_html_page(
             </div>
             """
 
-        # Temporal Observation Comparison (M7)
+        # 3. Exact Geographic Location & Spatial Footprint (for selected tile)
+        if result.selected_tile_id:
+            active_id = result.selected_tile_id
+            active_hit = result.selected_hit
+            authoritative_meta = load_tile_authoritative_metadata(active_id, root)
+            geo_info = extract_geographic_info(authoritative_meta or active_hit)
+            tile_disp_meta = extract_tile_display_metadata(authoritative_meta, active_hit)
+
+            crs_disp = html.escape(str(geo_info["crs"]))
+            bounds_wgs = geo_info["bounds_wgs84"]
+            centroid = geo_info["centroid_wgs84"]
+            corners = geo_info["corners_wgs84"]
+            bounds_proj = geo_info["bounds_projected"]
+
+            centroid_str = f"{centroid['lon']:.6f}&deg; E, {centroid['lat']:.6f}&deg; N" if centroid else "Not available"
+            min_lon_str = f"{bounds_wgs[0]:.6f}&deg; E" if bounds_wgs else "Not available"
+            min_lat_str = f"{bounds_wgs[1]:.6f}&deg; N" if bounds_wgs else "Not available"
+            max_lon_str = f"{bounds_wgs[2]:.6f}&deg; E" if bounds_wgs else "Not available"
+            max_lat_str = f"{bounds_wgs[3]:.6f}&deg; N" if bounds_wgs else "Not available"
+
+            if corners:
+                nw_str = f"({corners['NW']['lon']:.5f}&deg; E, {corners['NW']['lat']:.5f}&deg; N)"
+                ne_str = f"({corners['NE']['lon']:.5f}&deg; E, {corners['NE']['lat']:.5f}&deg; N)"
+                sw_str = f"({corners['SW']['lon']:.5f}&deg; E, {corners['SW']['lat']:.5f}&deg; N)"
+                se_str = f"({corners['SE']['lon']:.5f}&deg; E, {corners['SE']['lat']:.5f}&deg; N)"
+            else:
+                nw_str = ne_str = sw_str = se_str = "Not available"
+
+            if bounds_proj and len(bounds_proj) == 4:
+                projected_html = f"""
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                    <div><span style="color:var(--text-muted);">Projected CRS:</span> <code>{html.escape(str(geo_info.get('projected_crs', 'EPSG:32643')))}</code></div>
+                    <div><span style="color:var(--text-muted);">Unit:</span> Metres (Cartesian Easting/Northing)</div>
+                    <div><span style="color:var(--text-muted);">Min X (Easting):</span> <code>{bounds_proj[0]:.1f} m</code></div>
+                    <div><span style="color:var(--text-muted);">Min Y (Northing):</span> <code>{bounds_proj[1]:.1f} m</code></div>
+                    <div><span style="color:var(--text-muted);">Max X (Easting):</span> <code>{bounds_proj[2]:.1f} m</code></div>
+                    <div><span style="color:var(--text-muted);">Max Y (Northing):</span> <code>{bounds_proj[3]:.1f} m</code></div>
+                </div>
+                """
+            else:
+                projected_html = '<div style="color:var(--text-muted); font-size:12px;">Not available (Unprojected WGS84 native coordinate reference system).</div>'
+
+            svg_diagram = render_bounding_box_diagram(bounds_wgs, geo_info["crs"], active_id)
+
+            results_html += f"""
+            <div class="card">
+                <div class="card-title"><span class="icon">&#127758;</span> Exact Geographic Location &amp; Spatial Footprint</div>
+                <div class="grid-2">
+                    <div>
+                        <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:8px; padding:16px; margin-bottom:14px;">
+                            <div style="font-size:12px; font-weight:700; color:var(--accent-cyan); text-transform:uppercase; margin-bottom:8px; letter-spacing:0.5px;">
+                                WGS84 Geographic Coordinates (Degrees &deg;)
+                            </div>
+                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; font-size:13px;">
+                                <div><span style="color:var(--text-muted);">CRS:</span> <code>{crs_disp}</code></div>
+                                <div><span style="color:var(--text-muted);">Centroid:</span> <code>{centroid_str}</code></div>
+                                <div><span style="color:var(--text-muted);">Min Longitude:</span> <code>{min_lon_str}</code></div>
+                                <div><span style="color:var(--text-muted);">Min Latitude:</span> <code>{min_lat_str}</code></div>
+                                <div><span style="color:var(--text-muted);">Max Longitude:</span> <code>{max_lon_str}</code></div>
+                                <div><span style="color:var(--text-muted);">Max Latitude:</span> <code>{max_lat_str}</code></div>
+                            </div>
+                            <div style="margin-top:14px; font-size:12px; border-top:1px solid var(--border-color); padding-top:10px;">
+                                <span style="color:var(--text-muted); font-weight:600;">Corner Coordinates (WGS84):</span>
+                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-top:6px; font-family:monospace; font-size:11px;">
+                                    <div><strong>NW:</strong> {nw_str}</div>
+                                    <div><strong>NE:</strong> {ne_str}</div>
+                                    <div><strong>SW:</strong> {sw_str}</div>
+                                    <div><strong>SE:</strong> {se_str}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                            <div style="font-size:12px; font-weight:700; color:var(--accent-emerald); text-transform:uppercase; margin-bottom:8px; letter-spacing:0.5px;">
+                                Projected Coordinates (Metres X/Y)
+                            </div>
+                            {projected_html}
+                            <div style="margin-top:10px; font-size:11px; color:var(--text-muted); line-height:1.4;">
+                                <em>Distinction: WGS84 coordinates represent angular geographic latitude/longitude on the WGS84 ellipsoid. Projected coordinates represent Cartesian planar metres on the conformal UTM grid.</em>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        {svg_diagram}
+                    </div>
+                </div>
+            </div>
+            """
+
+            # 4. Expandable Tile Metadata Panel
+            results_html += f"""
+            <div class="card">
+                <details>
+                    <summary style="font-size:15px; font-weight:700; color:var(--text-main);"><span class="icon">&#128196;</span> Authoritative Tile Metadata (M2 / M4 / M6 Contract)</summary>
+                    <div style="margin-top:16px;">
+                        <table class="metadata-table">
+                            <tbody>
+                                <tr><th>Tile ID</th><td><code>{html.escape(tile_disp_meta['tile_id'])}</code></td></tr>
+                                <tr><th>Source Scene ID</th><td><code>{html.escape(tile_disp_meta['scene_id'])}</code></td></tr>
+                                <tr><th>Modality / Sensor</th><td>{html.escape(tile_disp_meta['modality'])} &bull; {html.escape(tile_disp_meta['platform'])} ({html.escape(tile_disp_meta['sensor'])})</td></tr>
+                                <tr><th>Processing Level</th><td>{html.escape(tile_disp_meta['processing_level'])}</td></tr>
+                                <tr><th>Acquisition Timestamp (UTC)</th><td>{html.escape(tile_disp_meta['acquisition_datetime_utc'])}</td></tr>
+                                <tr><th>Grid Index</th><td>{html.escape(tile_disp_meta['grid_index'])}</td></tr>
+                                <tr><th>Tile Dimensions</th><td>{tile_disp_meta['dimensions']}</td></tr>
+                                <tr><th>Tile Filesystem Path</th><td><code>{html.escape(tile_disp_meta['tile_directory'])}</code></td></tr>
+                                <tr><th>Available Bands</th><td>{html.escape(tile_disp_meta['bands_available'])}</td></tr>
+                                <tr><th>Quality Diagnostics</th><td>{html.escape(tile_disp_meta['quality_diagnostic'])}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            </div>
+            """
+
+        # 5. Temporal Observation Comparison (M7)
         if result.temporal_pair:
             pair = result.temporal_pair
             ref_dt = pair.reference_datetime_utc[:19].replace("T", " ")
@@ -469,18 +725,20 @@ def build_html_page(
                         {ref_render}
                         <div class="image-meta">Date: {ref_dt} UTC</div>
                         <div class="image-meta">Tile: {html.escape(pair.reference_tile_id)}</div>
+                        <div class="image-meta">Scene: {html.escape(pair.reference_scene_id[:24])}..</div>
                     </div>
                     <div class="image-box">
                         <div class="image-title">Comparison Observation (T1)</div>
                         {comp_render}
                         <div class="image-meta">Date: {comp_dt} UTC (+{pair.temporal_delta_days:.1f} days)</div>
                         <div class="image-meta">Tile: {html.escape(pair.comparison_tile_id)}</div>
+                        <div class="image-meta">Scene: {html.escape(pair.comparison_scene_id[:24])}..</div>
                     </div>
                 </div>
             </div>
             """
 
-        # Change Detection & False-Alarm Suppression (M8 & M9)
+        # 6. Change Detection & False-Alarm Suppression (M8 & M9)
         if result.change_result and result.suppressed_result:
             m8 = result.change_result
             m9 = result.suppressed_result
@@ -493,7 +751,7 @@ def build_html_page(
 
                 results_html += f"""
                 <div class="card">
-                    <div class="card-title"><span class="icon">&#9889;</span> Change Analysis & False-Alarm Suppression (M8 &rarr; M9)</div>
+                    <div class="card-title"><span class="icon">&#9889;</span> Change Analysis &amp; False-Alarm Suppression (M8 &rarr; M9)</div>
                     <div class="grid-3">
                         <div class="image-box">
                             <div class="image-title">M8 Spectral Distance (CVA)</div>
@@ -503,7 +761,7 @@ def build_html_page(
                         <div class="image-box">
                             <div class="image-title">M9 Confirmed Change Mask</div>
                             {m9_mask_render}
-                            <div class="image-meta">Spatial 8-Neighbor & Area Filtered</div>
+                            <div class="image-meta">Spatial 8-Neighbor &amp; Area Filtered</div>
                         </div>
                         <div class="image-box">
                             <div class="image-title">M9 Heuristic Confidence</div>
@@ -514,13 +772,13 @@ def build_html_page(
                 </div>
                 """
 
-                # Summary Statistics Cards
+                # 7. Quantitative Change Summary Cards
                 mean_conf_str = f"{m9.mean_confidence_on_change:.4f}" if m9.mean_confidence_on_change is not None else "N/A"
                 max_conf_str = f"{m9.max_confidence:.4f}" if m9.max_confidence is not None else "N/A"
 
                 results_html += f"""
                 <div class="card">
-                    <div class="card-title"><span class="icon">&#128202;</span> Quantitative Change & Noise Summary</div>
+                    <div class="card-title"><span class="icon">&#128202;</span> Quantitative Change &amp; Noise Summary</div>
                     <div class="grid-4" style="margin-bottom: 16px;">
                         <div class="metric-card">
                             <div class="metric-label">Confirmed Changed Pixels</div>
@@ -578,7 +836,7 @@ def build_html_page(
                 </div>
                 """
 
-        # Provenance expander
+        # 8. Machine-Readable Provenance expander
         prov_dict = result.to_dict()
         prov_json = html.escape(json.dumps(prov_dict, indent=2))
         results_html += f"""
@@ -589,6 +847,12 @@ def build_html_page(
             </details>
         </div>
         """
+
+    # 9. FLUX Milestone Architecture (Roadmap & Status)
+    milestone_arch_html = generate_milestone_architecture_html()
+
+    # 10. FLUX Full Technical & Feasibility Report (Integrated)
+    technical_report_html = generate_technical_report_html()
 
     return f"""<!DOCTYPE html>
     <html lang="en">
@@ -604,6 +868,8 @@ def build_html_page(
             {alert_html}
             {query_panel_html}
             {results_html}
+            {milestone_arch_html}
+            {technical_report_html}
         </div>
     </body>
     </html>
@@ -611,7 +877,7 @@ def build_html_page(
 
 
 class FLUXRequestHandler(BaseHTTPRequestHandler):
-    """HTTP Request Handler serving the local FLUX Presentation UI."""
+    """HTTP Request Handler serving the local FLUX Presentation UI and Report downloads."""
 
     pipeline: Optional[PoCPipeline] = None
     project_root: Optional[Path] = None
@@ -621,16 +887,62 @@ class FLUXRequestHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
-        """Handle GET requests for the dashboard UI."""
+        """Handle GET requests for the dashboard UI and report downloads."""
         parsed_url = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed_url.query)
 
-        # Extract parameters
+        # 1. Handle Technical Report Downloads
+        if parsed_url.path == "/download-report":
+            fmt = params.get("format", ["markdown"])[0].lower().strip()
+            if fmt in ("html", "htm"):
+                md = generate_technical_report_markdown()
+                body = generate_technical_report_html(md)
+                page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>FLUX Technical &amp; Feasibility Report - SIH2026227</title>
+<style>
+body {{ background:#0c0f17; color:#f1f5f9; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; line-height:1.6; padding:40px; }}
+.card {{ background:#151a24; border:1px solid #242c3d; border-radius:12px; padding:28px; max-width:1100px; margin:0 auto; }}
+table {{ width:100%; border-collapse:collapse; margin:16px 0; font-size:13px; }}
+th, td {{ border:1px solid #242c3d; padding:10px 14px; text-align:left; }}
+th {{ background:#0c0f17; color:#94a3b8; font-weight:600; }}
+code {{ font-family:monospace; color:#38bdf8; }}
+pre {{ background:#0c0f17; border:1px solid #242c3d; border-radius:6px; padding:16px; overflow-x:auto; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+                body_bytes = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="FLUX_Technical_Report.html"')
+                self.send_header("Content-Length", str(len(body_bytes)))
+                self.end_headers()
+                self.wfile.write(body_bytes)
+                return
+            else:
+                # Default: Markdown
+                md = generate_technical_report_markdown()
+                md_bytes = md.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="FLUX_Technical_Report.md"')
+                self.send_header("Content-Length", str(len(md_bytes)))
+                self.end_headers()
+                self.wfile.write(md_bytes)
+                return
+
+        # 2. Handle Interactive Dashboard Requests
         query = params.get("query", [DEFAULT_QUERY])[0].strip()
         modality = params.get("modality", ["optical"])[0].strip()
         top_k_str = params.get("top_k", ["5"])[0].strip()
         date_from = params.get("date_from", [""])[0].strip()
         date_to = params.get("date_to", [""])[0].strip()
+        selected_tile_id = params.get("selected_tile_id", [""])[0].strip()
 
         try:
             top_k = int(top_k_str)
@@ -650,6 +962,7 @@ class FLUXRequestHandler(BaseHTTPRequestHandler):
                     modality=modality_filter,
                     date_from=date_from if date_from else None,
                     date_to=date_to if date_to else None,
+                    selected_tile_id=selected_tile_id if selected_tile_id else None,
                 )
             except Exception as exc:
                 error_msg = f"Pipeline execution failed: {exc}"
@@ -661,6 +974,7 @@ class FLUXRequestHandler(BaseHTTPRequestHandler):
             modality=modality,
             date_from=date_from,
             date_to=date_to,
+            selected_tile_id=selected_tile_id,
             result=result,
             error_message=error_msg,
             project_root=self.project_root,

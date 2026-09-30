@@ -91,6 +91,19 @@ class PoCPipelineResult:
         """Return mean heuristic confidence over confirmed change pixels."""
         return self.suppressed_result.mean_confidence_on_change if self.suppressed_result else None
 
+    @property
+    def selected_hit(self) -> Optional[Dict[str, Any]]:
+        """Return the search hit dictionary corresponding to the selected tile."""
+        if not self.selected_tile_id:
+            return None
+        for h in self.filtered_hits:
+            if h.get("tile_id") == self.selected_tile_id:
+                return h
+        for h in self.retrieval_hits:
+            if h.get("tile_id") == self.selected_tile_id:
+                return h
+        return None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert result to a JSON-serializable dictionary."""
         return {
@@ -184,6 +197,7 @@ class PoCPipeline:
         date_to: Optional[Union[str, date, datetime]] = None,
         scene_id: Optional[str] = None,
         bbox: Optional[Sequence[float]] = None,
+        selected_tile_id: Optional[str] = None,
         change_config: Optional[ChangeDetectionConfig] = None,
         suppression_config: Optional[SuppressionConfig] = None,
     ) -> PoCPipelineResult:
@@ -273,7 +287,22 @@ class PoCPipeline:
                 warnings=("No tiles matched the metadata filter constraints.",),
             )
 
-        selected_tile = filtered_hits[0]
+        # Determine active tile for temporal pairing and change detection
+        selected_tile = None
+        if selected_tile_id:
+            for hit in filtered_hits:
+                if hit.get("tile_id") == selected_tile_id:
+                    selected_tile = hit
+                    break
+            if selected_tile is None:
+                for hit in raw_ranked:
+                    if hit.get("tile_id") == selected_tile_id:
+                        selected_tile = hit
+                        break
+
+        if selected_tile is None:
+            selected_tile = filtered_hits[0]
+
         selected_tile_id = selected_tile["tile_id"]
 
         # ---------------------------------------------------------
