@@ -384,6 +384,133 @@ def run_synthetic_benchmark(manifest_path: Path) -> Dict[str, Any]:
     }
 
 
+def extract_tensor_features(out: Any) -> Any:
+    """Extract 2D feature tensor from diverse Hugging Face model output formats."""
+    if hasattr(out, "pooler_output") and out.pooler_output is not None:
+        return out.pooler_output
+    if hasattr(out, "image_embeds") and out.image_embeds is not None:
+        return out.image_embeds
+    if hasattr(out, "text_embeds") and out.text_embeds is not None:
+        return out.text_embeds
+    if isinstance(out, (list, tuple)):
+        return out[0]
+    return out
+
+
+def run_live_model_evaluation(
+    candidate: str,
+    model_dir: Path,
+    manifest_path: Path,
+    batch_size: int = 32,
+    device: str = "cpu",
+    max_samples: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Evaluate a staged vision-language model on the RSICD evaluation benchmark.
+    """
+    import torch
+    from PIL import Image
+    from transformers import CLIPModel, CLIPProcessor
+
+    print(f"Loading manifest from: {manifest_path}")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    items = manifest["items"]
+    if max_samples and max_samples < len(items):
+        print(f"Subsampling evaluation to first {max_samples} images...")
+        items = items[:max_samples]
+
+    eval_base_dir = manifest_path.parent
+    image_ids = [it["image_id"] for it in items]
+    caption_ids = [cap["caption_id"] for it in items for cap in it["captions"]]
+
+    num_images = len(image_ids)
+    num_captions = len(caption_ids)
+    print(f"Evaluating '{candidate}' on {num_images} images, {num_captions} captions...")
+
+    tracemalloc.start()
+    t_load_0 = time.perf_counter()
+
+    # Load model and processor offline
+    model = CLIPModel.from_pretrained(str(model_dir), local_files_only=True).to(device)
+    processor = CLIPProcessor.from_pretrained(str(model_dir), local_files_only=True)
+    model.eval()
+    load_duration = time.perf_counter() - t_load_0
+    print(f"Model loaded offline in {load_duration:.2f} s")
+
+    disk_size_mb = get_directory_size_mb(model_dir)
+
+    # 1. Encode images
+    print(f"Encoding {num_images} images in batches of {batch_size}...")
+    t_img_0 = time.perf_counter()
+    image_embeds_list = []
+    for i in range(0, num_images, batch_size):
+        batch_items = items[i : i + batch_size]
+        batch_imgs = []
+        for it in batch_items:
+            img_path = eval_base_dir / it["relative_path"]
+            with Image.open(img_path) as img:
+                batch_imgs.append(img.convert("RGB"))
+
+        inputs = processor(images=batch_imgs, return_tensors="pt").to(device)
+        with torch.no_grad():
+            raw_feats = extract_tensor_features(model.get_image_features(**inputs))
+            norm_feats = raw_feats / raw_feats.norm(p=2, dim=-1, keepdim=True)
+            image_embeds_list.append(norm_feats.cpu().numpy().astype(np.float32))
+
+    img_embs = np.concatenate(image_embeds_list, axis=0)
+    total_img_time = time.perf_counter() - t_img_0
+    tile_latency_ms = (total_img_time / max(num_images, 1)) * 1000.0
+
+    # 2. Encode text captions
+    all_captions = [cap["text"] for it in items for cap in it["captions"]]
+    text_batch_size = batch_size * 2
+    print(f"Encoding {num_captions} text captions in batches of {text_batch_size}...")
+    t_txt_0 = time.perf_counter()
+    text_embeds_list = []
+    for i in range(0, num_captions, text_batch_size):
+        batch_texts = all_captions[i : i + text_batch_size]
+        inputs = processor(text=batch_texts, return_tensors="pt", padding=True, truncation=True).to(device)
+        with torch.no_grad():
+            raw_feats = extract_tensor_features(model.get_text_features(**inputs))
+            norm_feats = raw_feats / raw_feats.norm(p=2, dim=-1, keepdim=True)
+            text_embeds_list.append(norm_feats.cpu().numpy().astype(np.float32))
+
+    text_embs = np.concatenate(text_embeds_list, axis=0)
+    total_txt_time = time.perf_counter() - t_txt_0
+    query_latency_ms = (total_txt_time / max(num_captions, 1)) * 1000.0
+
+    # 3. Compute retrieval metrics
+    print("Computing retrieval quality suite metrics...")
+    retrieval_metrics = evaluate_retrieval_performance(
+        image_embeddings=img_embs,
+        image_ids=image_ids,
+        text_embeddings=text_embs,
+        caption_ids=caption_ids,
+        manifest=manifest,
+    )
+
+    current_mem, peak_mem = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    engineering_metrics = {
+        "disk_footprint_mb": disk_size_mb,
+        "peak_ram_mb": round(peak_mem / (1024.0 * 1024.0), 2),
+        "tile_encode_latency_ms": round(tile_latency_ms, 2),
+        "query_encode_latency_ms": round(query_latency_ms, 2),
+        "model_load_time_s": round(load_duration, 2),
+        "evaluation_duration_s": round(total_img_time + total_txt_time, 3),
+        "embedding_dimension": int(img_embs.shape[1]),
+    }
+
+    return {
+        "candidate": candidate,
+        "retrieval_metrics": retrieval_metrics,
+        "engineering_metrics": engineering_metrics,
+    }
+
+
 def print_evaluation_report(results: Dict[str, Any]) -> None:
     """Print an unbiased, cleanly formatted evaluation report."""
     sep = "=" * 70
@@ -431,7 +558,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--candidate",
         type=str,
-        default="Synthetic-Mock",
+        default="clip-rsicd-v2",
         help="Candidate model identifier",
     )
     parser.add_argument(
@@ -445,6 +572,24 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=get_project_root() / "data" / "evaluation" / "manifest.json",
         help="Path to benchmark evaluation manifest.json",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Batch size for embedding generation",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Optional maximum number of images to evaluate",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Inference device (cpu or cuda)",
     )
     parser.add_argument(
         "--dry-run",
@@ -472,11 +617,31 @@ def main() -> int:
         print_evaluation_report(results)
         return 0
 
-    print(
-        f"Notice: Model evaluation requested for '{args.candidate}'.\n"
-        "Model weights and dependencies are not staged yet per instructions.\n"
-        "Use --dry-run to test the evaluation harness on synthetic benchmark embeddings."
+    model_dir = args.model_dir
+    if model_dir is None:
+        default_dir = get_project_root() / "models" / args.candidate
+        if default_dir.exists():
+            model_dir = default_dir
+
+    if model_dir is None or not model_dir.exists():
+        print(
+            f"Error: Model directory not found for candidate '{args.candidate}'.\n"
+            f"Expected staged model at: {model_dir or (get_project_root() / 'models' / args.candidate)}\n"
+            "Stage model weights first using:\n"
+            "    python src/download_weights.py",
+            file=sys.stderr,
+        )
+        return 1
+
+    results = run_live_model_evaluation(
+        candidate=args.candidate,
+        model_dir=model_dir,
+        manifest_path=args.manifest,
+        batch_size=args.batch_size,
+        device=args.device,
+        max_samples=args.max_samples,
     )
+    print_evaluation_report(results)
     return 0
 
 
