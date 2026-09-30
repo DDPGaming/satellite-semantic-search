@@ -7,8 +7,11 @@ Exports:
 
 from src.retrieval.builder import build_index_from_embeddings
 from src.retrieval.index import VectorIndex
+from src.retrieval.search import TextSearchEngine
 
 __all__ = [
     "VectorIndex",
     "build_index_from_embeddings",
+    "TextSearchEngine",
 ]
+
